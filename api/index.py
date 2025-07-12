@@ -5,11 +5,15 @@ import requests
 from PIL import Image
 import io
 
-import google.generativeai as genai
-from flask import Flask, render_template, request, jsonify
-import json
+# --- ЭТО ВАЖНАЯ ЧАСТЬ ---
+from dotenv import load_dotenv
+load_dotenv()
 
-app = Flask(__name__)
+import google.generativeai as genai
+template_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'templates'))
+
+
+app = Flask(__name__, template_folder=template_dir)
 
 try:
     replicate_api_token = os.environ.get("REPLICATE_API_TOKEN")
