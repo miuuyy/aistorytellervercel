@@ -74,9 +74,6 @@ Your goal is to create a flowing narrative in chunks. You are responsible for br
 """
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-@app.route('/')
-def index():
-    return render_template('index.html')
 
 @app.route('/generate', methods=['POST'])
 def generate():
