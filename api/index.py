@@ -1,20 +1,16 @@
-import os, re, io, json          # ← json тоже нужен
-from flask import Flask, request, jsonify   # ← ЭТО добавь
-import re
+import os, re, io, json
+from flask import Flask, request, jsonify
 import replicate
 import requests
 from PIL import Image
 import io
 
-# --- ЭТО ВАЖНАЯ ЧАСТЬ ---
 from dotenv import load_dotenv
 load_dotenv()
 
 import google.generativeai as genai
-template_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'templates'))
 
-
-app = Flask(__name__, template_folder=template_dir)
+app = Flask(__name__)
 
 try:
     replicate_api_token = os.environ.get("REPLICATE_API_TOKEN")
@@ -36,7 +32,8 @@ try:
 
 except Exception as e:
     print(f"FATAL: API key configuration failed: {e}")
-    exit(1)
+    # Don't exit on Vercel, just log the error
+    replicate_client = None
 
 def create_ascii_art(image_bytes, width=70):
     ascii_chars = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$"
@@ -59,7 +56,6 @@ def create_ascii_art(image_bytes, width=70):
         print(f"ASCII conversion failed: {e}")
         return "[ ASCII CONVERSION FAILED ]"
 
-
 SYSTEM_PROMPT = """
 You are a creative director for a text-based adventure game. Your output MUST be a single, valid JSON object.
 The JSON must have: "genre", "image_prompt", "story_scenes", "choices", "is_final_scene".
@@ -73,16 +69,36 @@ The JSON must have: "genre", "image_prompt", "story_scenes", "choices", "is_fina
 IMPORTANT: Adhere to the requested story length (short, medium, or long) passed by the user. A 'short' story should have around 2-3 choice moments, 'medium' 4-5, and 'long' 6 or more.
 Your goal is to create a flowing narrative in chunks. You are responsible for bringing the story to a natural conclusion.
 """
-model = genai.GenerativeModel("gemini-2.5-flash")
 
+model = genai.GenerativeModel("gemini-2.0-flash-exp")
 
-@app.route('/generate', methods=['POST'])
+# Main route handler that handles both root and API paths
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def catch_all(path):
+    # Handle API routes
+    if path.startswith('api/'):
+        return handle_api_route(path[4:])  # Remove 'api/' prefix
+    
+    # For all other routes, serve the main HTML
+    return app.send_static_file('index.html')
+
+def handle_api_route(route):
+    if route == 'generate' and request.method == 'POST':
+        return generate()
+    elif route == 'health' and request.method == 'GET':
+        return health_check()
+    elif route == 'test-replicate' and request.method == 'GET':
+        return test_replicate()
+    else:
+        return jsonify({'error': 'Not found'}), 404
+
 def generate():
-    data = request.json
-    history = data.get('history', [])
-    user_input = data.get('userInput', '')
-
     try:
+        data = request.json
+        history = data.get('history', [])
+        user_input = data.get('userInput', '')
+
         print("--- Gemini Stage: Requesting scene data... ---")
         full_context = [
             {'role': 'user', 'parts': [SYSTEM_PROMPT]},
@@ -104,36 +120,29 @@ def generate():
         ascii_art = None
         image_prompt = scene_data.get("image_prompt") 
         
-        if image_prompt: 
+        if image_prompt and replicate_client: 
             print(f"--- Replicate Stage: Requesting image for prompt: '{image_prompt}' ---")
             try:
                 output = replicate_client.run(
                     "black-forest-labs/flux-schnell",
                     input={"prompt": image_prompt}
                 )
-            except Exception:
-                print("--- Flux Schnell failed, trying SDXL ---")
-                try:
-                    output = replicate_client.run(
-                        "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-                        input={"prompt": image_prompt}
-                    )
-                except Exception as e2:
-                     print(f"--- SDXL also failed: {e2}. No image will be generated. ---")
-                     output = None
-
-            if output:
-                image_url = output[0] if isinstance(output, list) and output else output
-                print(f"--- Replicate Stage: Image URL received: {image_url} ---")
                 
-                print("--- Downloading and converting image... ---")
-                image_response = requests.get(image_url, timeout=30)
-                image_response.raise_for_status()
-                ascii_art = create_ascii_art(image_response.content)
-                print("--- ASCII art created successfully ---")
+                if output:
+                    image_url = output[0] if isinstance(output, list) and output else output
+                    print(f"--- Replicate Stage: Image URL received: {image_url} ---")
+                    
+                    print("--- Downloading and converting image... ---")
+                    image_response = requests.get(image_url, timeout=30)
+                    image_response.raise_for_status()
+                    ascii_art = create_ascii_art(image_response.content)
+                    print("--- ASCII art created successfully ---")
+                    
+            except Exception as e:
+                print(f"--- Image generation failed: {e}. Continuing without image. ---")
+                ascii_art = None
         else:
-            print("--- Image not requested for this scene. ---")
-
+            print("--- Image not requested or Replicate not available for this scene. ---")
 
         final_data = {
             "genre": scene_data.get("genre", "Unknown"),
@@ -154,33 +163,42 @@ def generate():
             'history': final_history
         })
         
-    except replicate.exceptions.ReplicateError as e:
-        print(f"REPLICATE ERROR: {e}")
-        return jsonify({'status': 'error', 'message': f'Replicate API error: {str(e)}.'}), 500
-    except requests.exceptions.RequestException as e:
-        print(f"HTTP ERROR: {e}")
-        return jsonify({'status': 'error', 'message': f'Failed to download image: {str(e)}'}), 500
-    except json.JSONDecodeError as e:
-        print(f"JSON ERROR: {e}\nGemini response was: {response.text}")
-        return jsonify({'status': 'error', 'message': f'Invalid JSON from Gemini: {str(e)}'}), 500
     except Exception as e:
-        print(f"FATAL ERROR in /generate: {e}")
+        print(f"FATAL ERROR in generate: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'status': 'error', 'message': f'Unexpected error: {str(e)}'}), 500
 
-
-@app.route('/test-replicate', methods=['GET'])
-def test_replicate():
-    """Тестирование Replicate API"""
+def health_check():
     try:
+        replicate_token = os.environ.get("REPLICATE_API_TOKEN")
+        google_key = os.environ.get("GOOGLE_API_KEY")
+        
+        return jsonify({
+            'status': 'healthy',
+            'replicate_configured': bool(replicate_token),
+            'google_configured': bool(google_key),
+            'replicate_client_ready': replicate_client is not None
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e)
+        }), 500
+
+def test_replicate():
+    try:
+        if not replicate_client:
+            return jsonify({
+                'status': 'error',
+                'error': 'Replicate client not initialized'
+            }), 500
+            
         print("--- Testing Replicate API ---")
         
         models_to_test = [
             ("Flux Schnell", "black-forest-labs/flux-schnell"),
             ("SDXL", "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b"),
-            ("Stable Diffusion", "stability-ai/stable-diffusion:db21e45d3f7023abc2a46ee38a23973f6dce16bb082a930b0c49861f96d1e5bf"),
-            ("Kandinsky", "ai-forever/kandinsky-2.2:ad9d7879fbffa2874e1d909d1d37d9bc682889cc65b31f7bb00d2362619f194a")
         ]
         
         results = {}
@@ -226,44 +244,6 @@ def test_replicate():
             'type': type(e).__name__
         }), 500
 
-def test_manual_replicate_request(token):
-    """Тестируем Replicate API вручную через HTTP запрос"""
-    import requests
-    
-    headers = {
-        'Authorization': f'Bearer {token}',
-        'Content-Type': 'application/json'
-    }
-    
-    data = {
-        "version": "3d8650e9965a34f47535136453a242f388836551b3272d491c6e11894982a88d",
-        "input": {"prompt": "test image"}
-    }
-    
-    response = requests.post('https://api.replicate.com/v1/predictions', 
-                           headers=headers, json=data, timeout=30)
-    
-    if response.status_code == 401:
-        raise Exception(f"Manual request also failed with 401. Token is definitely invalid. Response: {response.text}")
-    
-    response.raise_for_status()
-    return response.json()
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Проверка работоспособности API"""
-    try:
-        replicate_token = os.environ.get("REPLICATE_API_TOKEN")
-        google_key = os.environ.get("GOOGLE_API_KEY")
-        
-        return jsonify({
-            'status': 'healthy',
-            'replicate_configured': bool(replicate_token),
-            'google_configured': bool(google_key)
-        })
-    except Exception as e:
-        return jsonify({
-            'status': 'unhealthy',
-            'error': str(e)
-        }), 500
-
+# This is important for Vercel
+if __name__ == "__main__":
+    app.run(debug=True)

@@ -26,6 +26,7 @@
         .art-text { font-size: 0.6em; line-height: 1.1; letter-spacing: 1px; }
         .help-text { opacity: 0.8; }
         .genre-tag { text-align: center; opacity: 0.7; letter-spacing: 4px; }
+        .error-text { color: #ff3333; }
     </style>
 </head>
 <body>
@@ -144,16 +145,33 @@
                 output.innerHTML = '';
                 await type('Receiving transmission...');
                 try {
-                    const response = await fetch('/generate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({history: history, userInput: userInput})});
+                    const response = await fetch('/api/generate', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            history: history,
+                            userInput: userInput
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
                     const result = await response.json();
                     
                     if (result.status === 'success') {
                         chatHistory = result.history;
                         await loadNewStorySegment(result.data);
-                    } else { throw new Error(result.message); }
+                    } else {
+                        throw new Error(result.message || 'Unknown error');
+                    }
                 } catch(e) { 
                     output.innerHTML = ''; 
-                    await type(`SYSTEM FAILURE: ${e.message}`); 
+                    await type(`SYSTEM FAILURE: ${e.message}`, 'error-text'); 
+                    await type('Attempting to reconnect...', 'help-text');
                     await endCurrentStory(); 
                 }
             }
@@ -176,7 +194,6 @@
                 await type("Awaiting system command... [type 'help' for list of commands]");
                 enableInput();
             }
-
 
             async function handleSettings(args) {
                 const [setting, value] = args;
@@ -214,9 +231,29 @@
   settings art [on|off] ..... Toggles ASCII art.
   help ...................... Displays this message.
   exit ...................... Ends the current story.
+  test ...................... Tests API connection.
 
 Current settings: length=${settings.length}, art=${settings.art}`;
                 await type(helpText, 'help-text');
+            }
+
+            async function testConnection() {
+                output.innerHTML = '';
+                await type('Testing API connection...');
+                try {
+                    const response = await fetch('/api/health');
+                    const result = await response.json();
+                    
+                    if (result.status === 'healthy') {
+                        await type('✓ API connection successful!', 'help-text');
+                        await type(`✓ Replicate configured: ${result.replicate_configured}`, 'help-text');
+                        await type(`✓ Google API configured: ${result.google_configured}`, 'help-text');
+                    } else {
+                        await type(`✗ API unhealthy: ${result.error}`, 'error-text');
+                    }
+                } catch(e) {
+                    await type(`✗ Connection failed: ${e.message}`, 'error-text');
+                }
             }
 
             async function handleUserInput() {
@@ -244,6 +281,7 @@ Current settings: length=${settings.length}, art=${settings.art}`;
                         case 'new': await startNewStory(args.join(' ')); break;
                         case 'help': await showHelp(); enableInput(); break;
                         case 'settings': await handleSettings(args); enableInput(); break;
+                        case 'test': await testConnection(); enableInput(); break;
                         case 'exit': await type("> No active story to exit."); enableInput(); break;
                         default: await type(`> Unknown command: "${command}".`); enableInput(); break;
                     }

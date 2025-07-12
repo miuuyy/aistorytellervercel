@@ -5,6 +5,11 @@
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/index.py" },
-    { "src": "/", "dest": "/index.html" }
-  ]
+    { "src": "/(.*)", "dest": "/index.html" }
+  ],
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 30
+    }
+  }
 }
