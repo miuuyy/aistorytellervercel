@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retro Storyteller</title>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+    <style>
+        :root { --bg: #000000; --text: #33ff33; }
+        html { background-color: #000; }
+        body { background-color: var(--bg); color: var(--text); font-family: 'VT323', monospace; font-size: 24px; margin: 0; overflow: hidden; height: 100vh; }
+        #crt-container { height: 100%; position: relative; overflow: hidden; box-shadow: inset 0 0 150px rgba(0,0,0,0.75); border-radius: 2% / 5%; }
+        #crt-container::before { content: " "; display: block; position: absolute; top: 0; left: 0; bottom: 0; right: 0; background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06)); z-index: 2; background-size: 100% 3px, 3px 100%; pointer-events: none; }
+        #terminal { height: 100%; padding: 1.5vw; box-sizing: border-box; display: flex; flex-direction: column; text-shadow: 0 0 2px var(--text); }
+        #header-art { white-space: pre; font-family: monospace; font-size: 14px; text-align: left; margin-bottom: 20px; flex-shrink: 0; opacity: 0.8; }
+        #story-output { flex-grow: 1; overflow-y: auto; }
+        #story-output::-webkit-scrollbar { display: none; }
+        #footer { text-align: center; font-size: 16px; opacity: 0.6; margin-top: 15px; flex-shrink: 0; }
+        #input-line { display: flex; align-items: center; flex-shrink: 0; position: relative; }
+        .prompt { margin-right: 10px; }
+        #user-input-text { white-space: pre; }
+        #user-input { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: transparent; border: none; color: transparent; outline: none; caret-color: transparent; font-family: inherit; font-size: inherit; }
+        #cursor { display: inline-block; background-color: var(--text); width: 14px; height: 26px; vertical-align: bottom; animation: blink 1.2s step-end infinite; }
+        @keyframes blink { 50% { background-color: transparent; } }
+        .output-line, .art-text, .help-text, .genre-tag { white-space: pre-wrap; line-height: 1.4; margin-bottom: 1.2em; }
+        .art-text { font-size: 0.6em; line-height: 1.1; letter-spacing: 1px; }
+        .help-text { opacity: 0.8; }
+        .genre-tag { text-align: center; opacity: 0.7; letter-spacing: 4px; }
+    </style>
+</head>
+<body>
+    <div id="crt-container">
+        <div id="terminal">
+            <div id="header-art">
+██████╗ ███████╗████████╗██████╗  ██████╗     ███████╗████████╗ ██████╗ ██████╗ ██╗   ██╗
+██╔══██╗██╔════╝╚══██╔══╝██╔══██╗██╔═══██╗    ██╔════╝╚══██╔══╝██╔═══██╗██╔══██╗╚██╗ ██╔╝
+██████╔╝█████╗     ██║   ██████╔╝██║   ██║    ███████╗   ██║   ██║   ██║██████╔╝ ╚████╔╝ 
+██╔══██╗██╔══╝     ██║   ██╔══██╗██║   ██║    ╚════██║   ██║   ██║   ██║██╔══██╗  ╚██╔╝  
+██║  ██║███████╗   ██║   ██║  ██║╚██████╔╝    ███████║   ██║   ╚██████╔╝██║  ██║   ██║   
+╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝     ╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝   
+            </div>
+            <div id="story-output"></div>
+            <div id="input-line">
+                <span class="prompt">></span>
+                <span id="user-input-text"></span>
+                <span id="cursor"></span>
+                <input type="text" id="user-input" autocomplete="off" spellcheck="false">
+            </div>
+            <div id="footer">---[ Powered by Gemini & Replicate ]---</div>
+        </div>
+    </div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const output = document.getElementById('story-output');
+            const realInput = document.getElementById('user-input');
+            const fakeInput = document.getElementById('user-input-text');
+            const cursor = document.getElementById('cursor');
+            const headerArt = document.getElementById('header-art');
+
+            const settings = { length: 'medium', art: 'on' };
+
+            let chatHistory = [];
+            let isWaitingForAI = false;
+            let gameState = 'IDLE';
+            
+            let sceneQueue = [];
+            let currentChoices = []; 
+            let currentGenre = '';
+            let currentArt = null;
+            let isStoryOver = false;
+
+            const typingSpeed = 20;
+
+            function print(text, className = 'output-line') {
+                const element = document.createElement('div');
+                element.className = className;
+                element.textContent = text;
+                output.appendChild(element);
+                output.scrollTop = output.scrollHeight;
+            }
+
+            async function type(text, className = 'output-line') {
+                const element = document.createElement('div');
+                element.className = className;
+                output.appendChild(element);
+                for (const char of text) {
+                    element.innerHTML += char;
+                    output.scrollTop = output.scrollHeight;
+                    await new Promise(r => setTimeout(r, typingSpeed));
+                }
+            }
+
+            function enableInput() {
+                isWaitingForAI = false;
+                realInput.disabled = false;
+                realInput.focus();
+                cursor.style.display = 'inline-block';
+            }
+            
+            async function processNextScene() {
+                output.innerHTML = ''; 
+
+                if (currentGenre) await type(`---[ ${currentGenre.toUpperCase()} ]---`, 'genre-tag');
+                
+                if (currentArt && settings.art === 'on') {
+                    print(currentArt, 'art-text');
+                    currentArt = null;
+                }
+                
+                if (sceneQueue.length > 0) {
+                    const sceneText = sceneQueue.shift();
+                    await type(sceneText);
+
+                    if (sceneQueue.length === 0) {
+                        if (currentChoices.length > 0) {
+                            const t = "YOUR ACTIONS:\n" + currentChoices.map((c, i) => `${i + 1}. ${c}`).join('\n') + `\n\n(Enter a number or type a custom action)`;
+                            await type(t, 'help-text');
+                        } else if (isStoryOver) {
+                            await type('---[ STORY COMPLETE ]---', 'genre-tag');
+                            return endCurrentStory(false);
+                        } else {
+                            await type('[Press Enter to continue...]', 'help-text');
+                        }
+                    } else {
+                        await type('[Press Enter to continue...]', 'help-text');
+                    }
+                }
+                enableInput();
+            }
+
+            async function loadNewStorySegment(data) {
+                const { art, story_scenes, choices, genre, is_final_scene } = data;
+                sceneQueue = story_scenes || [];
+                currentChoices = choices || [];
+                isStoryOver = is_final_scene || false;
+                if (genre) currentGenre = genre;
+                if (art) currentArt = art;
+                
+                await processNextScene();
+            }
+
+            async function fetchAndProcess(userInput, history) {
+                output.innerHTML = '';
+                await type('Receiving transmission...');
+                try {
+                    const response = await fetch('/generate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({history: history, userInput: userInput})});
+                    const result = await response.json();
+                    
+                    if (result.status === 'success') {
+                        chatHistory = result.history;
+                        await loadNewStorySegment(result.data);
+                    } else { throw new Error(result.message); }
+                } catch(e) { 
+                    output.innerHTML = ''; 
+                    await type(`SYSTEM FAILURE: ${e.message}`); 
+                    await endCurrentStory(); 
+                }
+            }
+            
+            async function startNewStory(description) {
+                headerArt.style.display = 'none';
+                gameState = 'IN_GAME';
+                const prompt = `New game. Topic: "${description || 'random'}". Length: ${settings.length}.`;
+                await fetchAndProcess(prompt, []);
+            }
+            
+            async function endCurrentStory(showTerminationMessage = true) {
+                gameState = 'IDLE';
+                chatHistory = []; sceneQueue = []; currentChoices = []; currentGenre = ''; currentArt = null; isStoryOver = false;
+                headerArt.style.display = 'block';
+                output.innerHTML = ''; 
+                if (showTerminationMessage) {
+                    await type("Story terminated. Returning to main command prompt.");
+                }
+                await type("Awaiting system command... [type 'help' for list of commands]");
+                enableInput();
+            }
+
+
+            async function handleSettings(args) {
+                const [setting, value] = args;
+                if (!setting || !value) {
+                    await type(`> Invalid syntax. Use 'settings [length|art] [value]'.`);
+                    return;
+                }
+                switch(setting.toLowerCase()) {
+                    case 'length':
+                        if (['short', 'medium', 'long'].includes(value)) {
+                            settings.length = value;
+                            await type(`> Story length set to: ${value.toUpperCase()}`);
+                        } else {
+                            await type(`> Unknown length. Use 'short', 'medium', or 'long'.`);
+                        }
+                        break;
+                    case 'art':
+                         if (['on', 'off'].includes(value)) {
+                            settings.art = value;
+                            await type(`> ASCII art set to: ${value.toUpperCase()}`);
+                        } else {
+                            await type(`> Unknown art setting. Use 'on' or 'off'.`);
+                        }
+                        break;
+                    default:
+                        await type(`> Unknown setting: '${setting}'. Use 'length' or 'art'.`);
+                }
+            }
+
+            async function showHelp() {
+                output.innerHTML = ''; 
+                const helpText = `Available Commands:
+  new story [description] ... Starts a new story.
+  settings length [s|m|l] ... Sets story length (short, medium, long).
+  settings art [on|off] ..... Toggles ASCII art.
+  help ...................... Displays this message.
+  exit ...................... Ends the current story.
+
+Current settings: length=${settings.length}, art=${settings.art}`;
+                await type(helpText, 'help-text');
+            }
+
+            async function handleUserInput() {
+                if (isWaitingForAI) return;
+                const userInput = realInput.value.trim();
+                
+                isWaitingForAI = true;
+                realInput.disabled = true;
+                cursor.style.display = 'none';
+
+                if (userInput) {
+                    output.innerHTML += `<div><span class="prompt">></span> ${userInput}</div>`;
+                    output.scrollTop = output.scrollHeight;
+                }
+                
+                realInput.value = '';
+                fakeInput.textContent = '';
+                
+                if (gameState === 'IDLE') {
+                    const parts = userInput.toLowerCase().split(' ');
+                    const command = parts[0];
+                    const args = parts.slice(1);
+
+                    switch (command) {
+                        case 'new': await startNewStory(args.join(' ')); break;
+                        case 'help': await showHelp(); enableInput(); break;
+                        case 'settings': await handleSettings(args); enableInput(); break;
+                        case 'exit': await type("> No active story to exit."); enableInput(); break;
+                        default: await type(`> Unknown command: "${command}".`); enableInput(); break;
+                    }
+                    return;
+                }
+
+                if (userInput.toLowerCase() === 'exit') return endCurrentStory();
+                if (sceneQueue.length > 0) return processNextScene();
+
+                let finalInput;
+                if (currentChoices.length === 0) {
+                    finalInput = "Continue the story.";
+                } else {
+                    if (userInput === "") {
+                        enableInput(); return;
+                    }
+                    const choiceIndex = parseInt(userInput, 10) - 1;
+                    finalInput = (choiceIndex >= 0 && choiceIndex < currentChoices.length) ? currentChoices[choiceIndex] : userInput;
+                }
+                
+                await fetchAndProcess(`My choice is: "${finalInput}"`, chatHistory);
+            }
+
+            realInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') handleUserInput(); });
+            realInput.addEventListener('input', () => { fakeInput.textContent = realInput.value; });
+            
+            (async () => { await endCurrentStory(false); })();
+        });
+    </script>
+</body>
+</html>
